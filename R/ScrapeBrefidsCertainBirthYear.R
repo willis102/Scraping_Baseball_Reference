@@ -13,17 +13,18 @@ library(stringr)
 library(rvest)
 
 # Define range of years to take (includes these years, i.e. <= and >=)
-minYear <- 1700
-maxYear <- 1899
+minYear <- 1970
+maxYear <- 2018
+
+# Make vector for letters with apostrophe first
+#apletters <- c("'",letters)
+apletters <- letters
 
 # Progress Bar
 pb <- txtProgressBar(min = 1, max = length(apletters), style = 3)
 
-# Make vector for letters with apostrophe first
-apletters <- c("'",letters)
-
 # For all letters
-for(i in 1:length(letters)){#
+for(i in 2:length(letters)){#
   
   # For apostrophe and all letters
   for(j in 1:length(apletters)){#
@@ -36,103 +37,65 @@ for(i in 1:length(letters)){#
     url <- paste("http://www.baseball-reference.com/register/player.cgi?initial=",letters[i],apletters[j],sep="")
     # Find desired HTML nodes (the one that lists all players, with birth and death info)
     htmlpage <- read_html(url)
-    playidhtml <- html_nodes(htmlpage, "#page_content span , #page_content span a")
-    # Change into character string data frame
-    playidhtml <- as.character(playidhtml)
-    playidhtml <- as.data.frame(playidhtml)
-    
-    # Check if no rows
-    # Lots of string cleaning coming up
-    if(nrow(playidhtml)!=0){
-      # Each player has 3 rows of data
-      # Just want to keep player id info and birth year
-      # Remove the 2nd row from each player
-      playidhtml$playidhtml <- as.character(playidhtml$playidhtml)
-      nrow <-nrow(playidhtml)
-      nplay <- nrow/3
-      torem <- 0
-      # Define rows to remove based on number of players
-      for(k in 1:nplay) {
-        torem <- c(torem, (3*k)-1)
+    # div we care about is `#div_players_aa`
+    xpath <- paste("#div_players_",letters[i],apletters[j],sep="")
+    playersHtml <- html_nodes(htmlpage, xpath)
+    # grab links
+    playerLinks <- html_nodes(playersHtml, 'a')
+    playerLinks <- html_attr(playerLinks, 'href')
+    if(length(playerLinks) > 0) {
+      # cast to string, so we can do string manipulation since the html doesn't give us much to work with structurally.
+      playersText <- as.character(html_text(playersHtml, TRUE))
+      # split on newlines
+      playerTexts <- strsplit(playersText, "\n")[[1]]
+      playerBorns <- 1:length(playerTexts)
+      playerIds <- 1:length(playerTexts)
+      for(p in 1:length(playerTexts)){
+        # extract birth year
+        playerBorns[p] = str_match(playerTexts[p], "b\\. (\\d{4})")[1,2]
+        playerIds[p] = str_match(playerLinks[p], "/register/player\\.cgi\\?id=([a-zA-Z0-9-]{12})")[1,2]
       }
-      # Remove rows
-      playidhtml <- playidhtml[-torem,]
-      # Split into player id and birth info columns (right and left)
-      right <- 0
-      left <- 0
-      for(k in 1:nplay){
-        right <- c(right, 2*k)
-        left <- c(left, (2*k)-1)
-      }
-      tempr <- playidhtml[right]
-      templ<- playidhtml[left]
-      # Combine these into one data frame
-      playid <- as.data.frame(cbind(templ,tempr),stringAsFactors=F)
-      # Make character
-      playid$tempr <- as.character(playid$tempr)
-      playid$templ <- as.character(playid$templ)
+      playerBorns <- as.integer(playerBorns)
+      playid <- as.data.frame(cbind(playerIds, playerBorns))
+      # drop rows with missing birth year (or less likely, brefid)
+      playid <- playid[complete.cases(playid), ]
+      # set column names
+      names(playid) <- c("bref_id", "BirthYear")
+      # cast BirthYear
+      playid <- transform(playid, BirthYear = as.numeric(as.character(BirthYear)))
       
-      # Remove (Ceb.)
-      if(length(grep("(Ceb.)",playid$tempr))!=0) playid <- playid[-grep("(Ceb.)",playid$tempr),]
+      # Subset to players with only this birth year
+      playid <- subset(playid, BirthYear >=minYear & BirthYear <=maxYear)
       
-      # Keep only player id's with known birth year info
-      playid <- playid[grep("b\\.",playid$tempr),]
-      # Check if 0 rows
-      if(nrow(playid)!=0){
-        # Split the left and right strings at the id and birth info
-        playid$templ <- strsplit(playid$templ, "id=")
-        playid$tempr <- strsplit(playid$tempr, "b.")
-        # Take only useful info which is at the end of the split strings
-        for(k in 1:nrow(playid)){
-          playid$templ[k] <- playid$templ[[k]][length(playid$templ[[k]])]
-          playid$tempr[k] <- playid$tempr[[k]][length(playid$tempr[[k]])]
-        }
-        
-        # Different cleaning of HTML strings to get the year info...
-        if(substr(playid$tempr[1],1,4)=="</i>"){
-          playid$tempr <- as.numeric(substr(playid$tempr, 6,9))
-        }else if(substr(playid$tempr[1],1,5)=="</em>"){
-          playid$tempr <- as.numeric(substr(playid$tempr, 7,10))
-        }
-        
-        # All minor league BRef Id's are 12 characters long
-        playid$templ <- substr(playid$templ, 1,12)
-        names(playid) <- c("bref_id","BirthYear")
-        
-        # Subset to players with only this birth year
-        playid <- subset(playid, BirthYear >=minYear & BirthYear <=maxYear)
-        
-        # If no players from that page, add some NA
-      }else if(nrow(playid)==0 ){
+      # if for any reason we have no data (filtering, empty intials, etc)
+      # create empty data frame
+      if(nrow(playid)==0 ){
         playid <- as.data.frame(cbind(NA,NA))
         names(playid) <- c("bref_id","BirthYear")
       }
-      # Other possibility for no players, again add NA
-    }else if(nrow(playidhtml)==0 ){
+    } else {
+      # no players found on this page.
       playid <- as.data.frame(cbind(NA,NA))
       names(playid) <- c("bref_id","BirthYear")
-      
     }
     
-    # If first page use that to start new Compiled output
-    if( j==1){
+    if(j==1){
+      # If first page use that to start new Compiled output
       brefids <- playid
+    }else if(j < length(apletters)){
       # Otherwise, add this page info to past compiled output
-    }else
       brefids <- rbind(brefids, playid)
     # If at the end of j, then save to file
-    if(j== length(apletters)){
+    }else{
       # Define sheet name
       sheet <- paste(letters[i],"'s",sep="")
       # Remove NA player ids
       brefids <- brefids[!is.na(brefids$bref_id),]
       
       # Save to file
-      file <- paste("data/BrefIDs(Bef1900)/", sheet,".rds", sep="" )
+      file <- paste("data/BrefIDs(New)/", sheet,".rds", sep="" )
       saveRDS(brefids, file)
-      
     }
-    
   }
   # Show the letter while looping
   print(i)
